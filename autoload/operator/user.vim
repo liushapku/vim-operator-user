@@ -93,7 +93,11 @@ function! operator#user#_define(operator_keyseq, function_name, ...)
   \              a:operator_keyseq,
   \              string(a:function_name),
   \              additional_settings)
-  execute printf('onoremap %s  g@', a:operator_keyseq)
+  "execute printf('onoremap %s  g@', a:operator_keyseq)
+  " restrict omap to be effective only when it is after the same map.
+  " otherwise cancel it
+  execute printf('onoremap <expr> %s (v:operator == "g@" && &opfunc == "%s")? "g@" : "\<esc>"',
+              \  a:operator_keyseq, a:function_name)
 endfunction
 
 
