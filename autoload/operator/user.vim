@@ -171,11 +171,66 @@ function! s:SID_PREFIX()
   return matchstr(expand('<sfile>'), '\%(^\|\.\.\)\zs<SNR>\d\+_\zeSID_PREFIX$')
 endfunction
 
+function! operator#user#mark(motion_wiseness)
+  let info = [a:motion_wiseness, s:cursor, s:count, s:count1, s:register]
+  if exists('s:callback')
+    call call(s:callback, info)
+  else
+    echo info
+  endif
+endfunction
 
+function! operator#user#set_up_callback(callback)
+  set operatorfunc=operator#user#mark
+  let s:cursor = getpos(".")
+  let s:count1 = v:count1
+  let s:count = v:count
+  let s:register = v:register
+  echo s:count1
+  if a:callback == ''
+    if exists('s:callback')
+      unlet s:callback
+    endif
+  else
+    let s:callback = function(a:callback)
+  endif
+endfunction
 
+function! operator#user#define_callback(name, callback)
+  let keyseq = '<Plug>(operator-' . a:name . ')'
+  let funcname = string(a:callback)
+  execute printf(('nnoremap <script> <silent> %s ' .
+  \               ':<C-u>call operator#user#set_up_callback(%s)<Return>' .
+  \               '<SID>(count)' .
+  \               '<SID>(register)' .
+  \               'g@'),
+  \              keyseq,
+  \              funcname)
+  execute printf(('vnoremap <script> <silent> %s ' .
+  \               ':<C-u>call operator#user#set_up_callback(%s)<Return>' .
+  \               'gv' .
+  \               '<SID>(register)' .
+  \               'g@'),
+  \              keyseq,
+  \              funcname)
+  execute printf(('inoremap <script> <silent> %s ' .
+  \               '<esc>l:call operator#user#set_up_callback(%s)<Return>' .
+  \               '<SID>(count)' .
+  \               '<SID>(register)' .
+  \               'g@'),
+  \              keyseq,
+  \              funcname)
+  "execute printf('onoremap %s  g@', a:operator_keyseq)
+  " restrict omap to be effective only when it is after the same map.
+  " otherwise cancel it
+  execute printf('onoremap <expr> %s (v:operator == "g@" && &opfunc == "%s")? "g@" : "\<esc>"',
+              \  keyseq, funcname)
+endfunction
 
-
-
+"map <Plug>(operator-mark) <Cmd>call operator#user#_set_up_callback('')<cr><SID>(count)<SID>(register)g@
+call operator#user#define_callback('mark', '')
+map ;m <Plug>(operator-mark)
+imap ;m <Plug>(operator-mark)
 
 
 " __END__  "{{{1
