@@ -171,67 +171,122 @@ function! s:SID_PREFIX()
   return matchstr(expand('<sfile>'), '\%(^\|\.\.\)\zs<SNR>\d\+_\zeSID_PREFIX$')
 endfunction
 
-function! operator#user#mark(motion_wiseness)
-  let info = [a:motion_wiseness, s:cursor, s:count, s:count1, s:register]
-  if exists('s:callback')
-    call call(s:callback, info)
+
+" new api ====================================================
+
+" called in imap or nmap
+function! s:setpos(info, start, end, motion_wiseness)
+  let pos1 = getpos("'".a:start)
+  let pos2 = getpos("'".a:end)
+  if pos1[1] > pos2[1] || (pos1[1] == pos2[1] && pos1[2] > pos2[2])
+    let a:info['start'] = pos2
+    let a:info['end'] = pos1
   else
-    echo info
+    let a:info['start'] = pos1
+    let a:info['end'] = pos2
   endif
+  let a:info['motion_wiseness'] = a:motion_wiseness
 endfunction
 
-function! operator#user#set_up_callback(callback)
-  set operatorfunc=operator#user#mark
-  let s:cursor = getpos(".")
-  let s:count1 = v:count1
-  let s:count = v:count
-  let s:register = v:register
-  echo s:count1
-  if a:callback == ''
-    if exists('s:callback')
-      unlet s:callback
+" mode: i for imap, v for vmap, n for nmap
+" (omap does not call this function)
+"
+" will be augumented with 'start', 'end' and 'motion_wiseness'
+function! s:init_info(callback, mode)
+  let rv = {
+        \ 'call' : function(a:callback),
+        \ 'cursor': getpos("."),
+        \ 'count': v:count,
+        \ 'count1': v:count1,
+        \ 'register': v:register,
+        \ 'mode' : a:mode,
+        \ 'virtualedit': &virtualedit,
+        \ }
+  return rv
+endfunction
+
+function! operator#user#operatorfunc(motion_wiseness) abort
+  let F = s:info['call']
+  call s:setpos(s:info, '[', ']', a:motion_wiseness)
+  try
+    call F(s:info)
+  finally
+    if s:info['mode'] == 'i'
+      let &virtualedit = s:info['virtualedit']
     endif
+    unlet s:info
+  endtry
+endfunction
+
+function! operator#user#nmap(callback)
+  set operatorfunc=operator#user#operatorfunc
+  let s:info = s:init_info(a:callback, 'n')
+  return "g@"
+endfunction
+function! operator#user#imap(callback)
+  set operatorfunc=operator#user#operatorfunc
+  let s:info = s:init_info(a:callback, 'i')
+  let &virtualedit = 'onemore'
+  return "\<c-o>g@"
+endfunction
+function! operator#user#omap(callback)
+  if v:operator == "g@" && &operatorfunc == 'operator#user#operatorfunc' &&
+        \ s:info['call'] == function(a:callback)
+    return "g@"
   else
-    let s:callback = function(a:callback)
+    return "\<esc>"
   endif
 endfunction
 
-function! operator#user#define_callback(name, callback)
-  let keyseq = '<Plug>(operator-' . a:name . ')'
-  let funcname = string(a:callback)
-  execute printf(('nnoremap <script> <silent> %s ' .
-  \               ':<C-u>call operator#user#set_up_callback(%s)<Return>' .
-  \               '<SID>(count)' .
-  \               '<SID>(register)' .
-  \               'g@'),
-  \              keyseq,
-  \              funcname)
-  execute printf(('vnoremap <script> <silent> %s ' .
-  \               ':<C-u>call operator#user#set_up_callback(%s)<Return>' .
-  \               'gv' .
-  \               '<SID>(register)' .
-  \               'g@'),
-  \              keyseq,
-  \              funcname)
-  execute printf(('inoremap <script> <silent> %s ' .
-  \               '<esc>l:call operator#user#set_up_callback(%s)<Return>' .
-  \               '<SID>(count)' .
-  \               '<SID>(register)' .
-  \               'g@'),
-  \              keyseq,
-  \              funcname)
-  "execute printf('onoremap %s  g@', a:operator_keyseq)
-  " restrict omap to be effective only when it is after the same map.
-  " otherwise cancel it
-  execute printf('onoremap <expr> %s (v:operator == "g@" && &opfunc == "%s")? "g@" : "\<esc>"',
-              \  keyseq, funcname)
+
+let s:motion_wiseness = {'v': 'char', 'V': 'line', "\<c-v>": 'block'}
+let s:visual_mode = { 'char':'v', 'line': 'V', 'block': "\<c-v>"}
+" this function is called in normal mode, since we didn't use <expr>-map
+function! operator#user#vmap(callback)
+  let info = s:init_info(a:callback, 'v')
+  call s:setpos(info, "<", ">", s:motion_wiseness[visualmode()])
+  2Log info
+  let F = function(a:callback)
+  call F(info)
+endfunction
+function! operator#user#visual_select(info) abort
+  if a:info['mode'] == 'v'
+    normal gv
+  else
+    call setpos("'<", a:info['start'])
+    call setpos("'>", a:info['end'])
+    let mode = s:visual_mode[a:info['motion_wiseness']]
+    let rv = "gv" . (mode == visualmode()? '' : mode)
+    exe "normal" rv
+  endif
 endfunction
 
-"map <Plug>(operator-mark) <Cmd>call operator#user#_set_up_callback('')<cr><SID>(count)<SID>(register)g@
-call operator#user#define_callback('mark', '')
-map ;m <Plug>(operator-mark)
-imap ;m <Plug>(operator-mark)
+function! operator#user#keyseq_from_name(name)
+  return '<Plug>(operator-' . a:name . ')'
+endfunction
+function! operator#user#define_callback(keyseq, callback, ...)
+  let keyseq = a:keyseq
+  let funcname = string(a:callback)
+  let modes = get(a:000, 0, 'nvo')
+  if modes =~ 'n'
+    execute printf('nnoremap <script> <silent> <expr> %s operator#user#nmap(%s)', keyseq, funcname)
+  endif
+  if modes =~ 'o'
+    execute printf('onoremap <script> <silent> <expr> %s operator#user#omap(%s)', keyseq, funcname)
+  endif
+  if modes =~ 'i'
+    execute printf('inoremap <script> <silent> <expr> %s operator#user#imap(%s)', keyseq, funcname)
+  endif
+  if modes =~ 'v'
+    execute printf('vnoremap <script> <silent> %s :<c-u>call operator#user#vmap(%s)<cr>', keyseq, funcname)
+  endif
+endfunction
 
+
+function! operator#user#default_callback(info)
+  echo a:info
+endfunction
+call operator#user#define_callback(';o', 'operator#user#default_callback', 'novi')
 
 " __END__  "{{{1
 " vim: foldmethod=marker
