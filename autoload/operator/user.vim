@@ -211,17 +211,23 @@ function! operator#user#operatorfunc(motion_wiseness) abort
   try
     call F(s:info)
   finally
-    if s:info['mode'] == 'i'
-      let &virtualedit = s:info['virtualedit']
-    endif
-    unlet s:info
+    let &virtualedit = s:info['virtualedit']
   endtry
 endfunction
 
 function! operator#user#nmap(callback)
   set operatorfunc=operator#user#operatorfunc
   let s:info = s:init_info(a:callback, 'n')
-  return "g@"
+  let count = s:info['count']
+  let count_str = count ? count : ''
+  "let rv = '@_' . count_str . "g@"
+  " because we are using <expr> mapping, the count inserted is still in the
+  " typeahead buffer waiting to be processed
+  " to cancel this count, use "@_" in normal/visual mode
+  " In operator-pending mode, this count is not cancellable
+  let rv = "g@"
+  let info = s:info
+  return rv
 endfunction
 function! operator#user#imap(callback)
   set operatorfunc=operator#user#operatorfunc
@@ -245,7 +251,6 @@ let s:visual_mode = { 'char':'v', 'line': 'V', 'block': "\<c-v>"}
 function! operator#user#vmap(callback)
   let info = s:init_info(a:callback, 'v')
   call s:setpos(info, "<", ">", s:motion_wiseness[visualmode()])
-  2Log info
   let F = function(a:callback)
   call F(info)
 endfunction
@@ -253,15 +258,42 @@ function! operator#user#visual_select(info) abort
   if a:info['mode'] == 'v'
     normal gv
   else
-    call setpos("'<", a:info['start'])
-    call setpos("'>", a:info['end'])
     let mode = s:visual_mode[a:info['motion_wiseness']]
-    let rv = "gv" . (mode == visualmode()? '' : mode)
-    exe "normal" rv
+    exe printf('normal! `[%s`]', mode)
   endif
 endfunction
 
-function! operator#user#keyseq_from_name(name)
+" when will this happen?
+function! operator#user#is_empty_region(start, end)  "{{{2
+  " Whenever 'operatorfunc' is called, '[ is always placed before '] even if
+  " a backward motion is given to g@.  But there is the only one exception.
+  " If an empty region is given to g@, '[ and '] are set to the same line, but
+  " '[ is placed after '].
+  return a:start[1] == a:end[1] && a:end[2] < a:start[2]
+endfunction
+
+function! operator#user#deletion_moves_cursor(info)
+  let motion_wiseness = a:info['motion_wiseness']
+  let motion_end_pos = a:info['end']
+  let [buffer_end_line, buffer_end_col] = [line('$'), len(getline('$'))]
+  let [motion_end_line, motion_end_col] = motion_end_pos[1:2]
+  let motion_end_last_col = len(getline(motion_end_line))
+  if motion_wiseness ==# 'char'
+    return ((motion_end_last_col == motion_end_col)
+    \       || (buffer_end_line == motion_end_line
+    \           && buffer_end_col <= motion_end_col))
+    "return motion_end_last_col == motion_end_col
+  elseif motion_wiseness ==# 'line'
+    return buffer_end_line == motion_end_line
+  elseif motion_wiseness ==# 'block'
+    return 0
+  else
+    echoerr 'E2: Invalid wise name:' string(a:wise_name)
+    return 0
+  endif
+endfunction
+
+function! operator#user#default_map(name)
   return '<Plug>(operator-' . a:name . ')'
 endfunction
 function! operator#user#define_callback(keyseq, callback, ...)
@@ -277,6 +309,7 @@ function! operator#user#define_callback(keyseq, callback, ...)
   if modes =~ 'i'
     execute printf('inoremap <script> <silent> <expr> %s operator#user#imap(%s)', keyseq, funcname)
   endif
+  " vmap didn't use <expr>
   if modes =~ 'v'
     execute printf('vnoremap <script> <silent> %s :<c-u>call operator#user#vmap(%s)<cr>', keyseq, funcname)
   endif
